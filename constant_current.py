@@ -1,4 +1,5 @@
 #~ Constant current datalogger.
+# Requires connection of the ads1261evm and a Atlas Scientific pH meter
 
 import sys
 
