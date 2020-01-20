@@ -32,11 +32,25 @@ def initialise_instruments():
 	pH_meter = pH_probe()
 	return adc, dac, pH_meter
 
-def setup(adc, adc_frequency = 20, digital_filter = 'FIR', BYPASS = 1, gain = 1, constant_current = 100, current_out_pin = 'AIN0'):
-	adc.set_frequency(data_rate=adc_frequency, digital_filter = 'sinc4')
+def current_check(voltage, resistance = 1.5):
+	# Takes in voltage in mV and resistance in Ohms
+	voltage, resistance = float(voltage), float(resistance) # convert to float
+	current = voltage/resistance # in mA
+	current = current * 1000 # convert to uA
+	return current
+
+def setup(adc, 
+			adc_frequency = 20, 
+			digital_filter = 'FIR', 
+			BYPASS = 1, 
+			gain = 1, 
+			constant_current = 'off', 
+			current_out_pin = 'none'):
+				
+	adc.set_frequency(data_rate=adc_frequency, digital_filter = digital_filter)
 	adc.PGA(BYPASS = BYPASS, GAIN = gain)
 	adc.print_PGA()
-	adc.reference_config(reference_enable=1, RMUXP = 'AVDD', RMUXN = 'AVSS')
+	adc.reference_config(reference_enable=1, RMUXP = 'Internal Positive', RMUXN = 'Internal Negative')
 	adc.print_reference_config()
 	
 	# Wait for reference voltage to settle
@@ -76,28 +90,43 @@ def main():
 	adc, dac, pH_meter = initialise_instruments()
 	setup(adc = adc,
 		adc_frequency = 19200, 
-		digital_filter = 'sinc1', 
-		BYPASS = 1, 
-		gain = 1, 
+		digital_filter = 'sinc4', 
+		BYPASS = 0, 
+		gain = 1,
 		constant_current = 100, 
 		current_out_pin = 'AIN0')
+		#~ gain = 1)
 	BYPASS, gain = adc.check_PGA()
-	reference = adc.power_readback(power = 'analog')
+	#~ reference = adc.power_readback(power = 'analog')
+	reference = 2500
+	#~ reference = GaN_measurement(adc, positive = 'AVDD'
 	
+	# forward measurement pairs
 	measurement_pairs = [
-		['AIN2', 'AIN3'], # sense pad 1
-		['AIN3', 'AIN4'], # between sense pads 1 & 2
-		['AIN4', 'AIN5'], # sense pad 2
-		['AIN5', 'AIN6'], # between sense pads 2 & 3
-		['AIN6', 'AIN7'] # sense pad 3
+		['AIN1', 'AIN2'],	# sense pad 1
+		['AIN2', 'AIN3'],	# between sense pads 1 & 2
+		['AIN3', 'AIN4'],	# sense pad 2
+		['AIN4', 'AIN5'],	# between sense pads 2 & 3
+		['AIN5', 'AIN6'],	# sense pad 3
+		['AINCOM', 'AIN7']	# current check
 	]
-
+	#~ # backward measurement pairs
+	#~ measurement_pairs = [
+		#~ ['AIN6', 'AIN5'],	# sense pad 1
+		#~ ['AIN5', 'AIN4'],	# between sense pads 1 & 2
+		#~ ['AIN4', 'AIN3'],	# sense pad 2
+		#~ ['AIN3', 'AIN2'],	# between sense pads 2 & 3
+		#~ ['AIN2', 'AIN1'],	# sense pad 3
+		#~ ['AIN7', 'AINCOM']	# current check
+	#~ ]
 	data = []
 	averaged_data = []
+	stdev_data = []
 	
 	for pair in range(len(measurement_pairs)):
 		data.append([])
 		averaged_data.append([])
+		stdev_data.append([])
 
 	# set up csv
 	timestamp = datetime.now()
@@ -108,10 +137,17 @@ def main():
 	fieldnames = ['Date', 
 					'Time', 
 					'Sense Pad 1 (mV)', 
+					'Standard deviation of Sense Pad 1 (mV)',
 					'Between Sense Pad 1 and 2 (mV)',
+					'Standard deviation between Sense Pad 1 and 2 (mV)',
 					'Sense Pad 2 (mV)', 
+					'Standard deviation of Sense Pad 2 (mV)',
 					'Between Sense Pad 2 and 3 (mV)',
+					'Standard deviation between Sense Pad 2 and 3 (mV)',
 					'Sense Pad 3 (mV)', 
+					'Standard deviation of Sense Pad 3 (mV)',
+					'Current check (uA)',
+					'Standard deviation of current (uA)',
 					'Commercial pH Sensor (pH)', 
 					'Air Temperature from ADS1261 (deg C)']
 	
@@ -123,68 +159,101 @@ def main():
 	except IOError:
 		print("Unable to save to csv")
 
-	writing_interval = 10 # 1 minute between csv writes
+	writing_interval = 10 # time (seconds) between csv writes
 	pH_measurements_for_csv, GaN_measurements_for_csv, temperature_for_csv, date_for_csv, time_for_csv = [], [], [], [], []
 	while(1):
+		write = 0
 		previous_time = time.time()
 		while(time.time() - previous_time < writing_interval):
 			try:
 				commercial_pH = pH_meter.single_output()
-				if commercial_pH in [254, 254.0, str(254), str(254.0)]: # if its an error code, collect other measurements
+				if commercial_pH in [254, 254.0, str(254), str(254.0), 255, 255.0, str(255), str(255.0)]: # if its an error code, collect other measurements
 					for each_pair in range(len(measurement_pairs)): # collect GaN measurements
 						measurement_GaN = GaN_measurement(adc, positive = measurement_pairs[each_pair][0], negative = measurement_pairs[each_pair][1], reference = reference, gain = gain)
-						data[each_pair].append(measurement_GaN)
+						if each_pair == 5:
+							measurement_GaN = current_check(voltage = measurement_GaN, resistance = 1.5)
+							#~ print("Current:", measurement_GaN, "(uA)")
+						if measurement_GaN is not None:
+							data[each_pair].append(measurement_GaN)
+						#~ data[each_pair].append(None)
+						
 				else:
 					pH_measurements_for_csv.append(commercial_pH)
 
 					for each_pair in range(len(measurement_pairs)):
-						mean = statistics.mean(data[each_pair])
-						averaged_data[each_pair].append(mean)
-
-					air_temperature = adc.check_temperature()
-					temperature_for_csv.append(air_temperature)
-					timestamp = datetime.now()
-					measurement_date = str(timestamp.year)+'-'+str(timestamp.month)+'-'+str(timestamp.day)
-					measurement_time = str(timestamp.hour)+':'+str(timestamp.minute)+':'+str(timestamp.second)+'.'+str(timestamp.microsecond)
-					date_for_csv.append(measurement_date)
-					time_for_csv.append(measurement_time)
+						try:
+							mean = statistics.mean(data[each_pair])
+							standard_deviation = statistics.stdev(data[each_pair])
+							averaged_data[each_pair].append(mean)
+							stdev_data[each_pair].append(standard_deviation)
+							write = 1 # write to csv because we have data
+						except:
+							write = 0
+							print("Error no mean")
+						data[each_pair] = []
+				
+					if write == 1:
+						air_temperature = adc.check_temperature()
+						temperature_for_csv.append(air_temperature)
+						timestamp = datetime.now()
+						measurement_date = str(timestamp.year)+'-'+str(timestamp.month)+'-'+str(timestamp.day)
+						measurement_time = str(timestamp.hour)+':'+str(timestamp.minute)+':'+str(timestamp.second)+'.'+str(timestamp.microsecond)
+						date_for_csv.append(measurement_date)
+						time_for_csv.append(measurement_time)
+					
+					else: 
+						pass
+					
+					measurement_data, measurement_time, commercial_pH, air_temperature = None, None, None, None
 			except KeyboardInterrupt:
 				adc.end()
 
 		
-		# write to csv
-		try:
-			with open(csv_file, 'a') as csvfile:
-				# write each row
-				#~ writer = csv.writer(csvfile)
-				writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-				for datapoint in range(len(date_for_csv)):
-					print(fieldnames[0],date_for_csv[datapoint],
-									fieldnames[1],time_for_csv[datapoint],
-									fieldnames[2],round(averaged_data[0][datapoint],2),
-									fieldnames[3],round(averaged_data[1][datapoint],2),
-									fieldnames[4],round(averaged_data[2][datapoint],2),
-									fieldnames[5],round(averaged_data[3][datapoint],2),
-									fieldnames[6],round(averaged_data[4][datapoint],2),
-									fieldnames[7],round(pH_measurements_for_csv[datapoint],2),
-									fieldnames[8],round(temperature_for_csv[datapoint],2),"\n")
-					writer.writerow({
-									fieldnames[0]:date_for_csv[datapoint],
-									fieldnames[1]:time_for_csv[datapoint],
-									fieldnames[2]:round(averaged_data[0][datapoint],2),
-									fieldnames[3]:round(averaged_data[1][datapoint],2),
-									fieldnames[4]:round(averaged_data[2][datapoint],2),
-									fieldnames[5]:round(averaged_data[3][datapoint],2),
-									fieldnames[6]:round(averaged_data[4][datapoint],2),
-									fieldnames[7]:round(pH_measurements_for_csv[datapoint],2),
-									fieldnames[8]:round(temperature_for_csv[datapoint],2),
-									})
-		except IOError:
-			print("Unable to save to csv")	
-		except KeyboardInterrupt:
-			adc.end()
-			csvfile.close()	
-
+		#~ # write to csv
+		if write == 1:
+			try:
+				with open(csv_file, 'a') as csvfile:
+					# write each row
+					writer = csv.writer(csvfile)
+					writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+					for datapoint in range(len(date_for_csv)):
+						print(fieldnames[0],date_for_csv[datapoint],"\t",
+										fieldnames[1],time_for_csv[datapoint],"\n",
+										fieldnames[2],round(averaged_data[0][datapoint],2),"(",round(stdev_data[0][datapoint],4),")","\t",
+										fieldnames[4],round(averaged_data[1][datapoint],2),"(",round(stdev_data[1][datapoint],4),")","\n",
+										fieldnames[6],round(averaged_data[2][datapoint],2),"(",round(stdev_data[2][datapoint],4),")","\t",
+										fieldnames[8],round(averaged_data[3][datapoint],2),"(",round(stdev_data[3][datapoint],4),")","\n",
+										fieldnames[10],round(averaged_data[4][datapoint],2),"(",round(stdev_data[4][datapoint],4),")","\t",
+										fieldnames[12],round(averaged_data[5][datapoint],2),"(",round(stdev_data[5][datapoint],4),")","\n",
+										fieldnames[14],round(pH_measurements_for_csv[datapoint],2),"\t",
+										fieldnames[15],round(temperature_for_csv[datapoint],2),"\n",
+										"Total potential:", round(averaged_data[0][datapoint]+averaged_data[1][datapoint]+averaged_data[2][datapoint]+averaged_data[3][datapoint]+averaged_data[4][datapoint]+averaged_data[5][datapoint]*100e-6*1.5,2),"mV\n")				
+						writer.writerow({
+										fieldnames[0]:date_for_csv[datapoint],
+										fieldnames[1]:time_for_csv[datapoint],
+										fieldnames[2]:round(averaged_data[0][datapoint],2),
+										fieldnames[3]:round(stdev_data[0][datapoint],4),
+										fieldnames[4]:round(averaged_data[1][datapoint],2),
+										fieldnames[5]:round(stdev_data[1][datapoint],4),
+										fieldnames[6]:round(averaged_data[2][datapoint],2),
+										fieldnames[7]:round(stdev_data[2][datapoint],4),
+										fieldnames[8]:round(averaged_data[3][datapoint],2),
+										fieldnames[9]:round(stdev_data[3][datapoint],4),
+										fieldnames[10]:round(averaged_data[4][datapoint],2),
+										fieldnames[11]:round(stdev_data[4][datapoint],4),
+										fieldnames[12]:round(averaged_data[5][datapoint],2),
+										fieldnames[13]:round(stdev_data[5][datapoint],4),
+										fieldnames[14]:round(pH_measurements_for_csv[datapoint],2),
+										fieldnames[15]:round(temperature_for_csv[datapoint],2)
+										})
+			except IOError:
+				print("Unable to save to csv")	
+			except KeyboardInterrupt:
+				adc.end()
+				csvfile.close()	
+		else:
+			pass
+			
 		# clear all appended data
 		for pair in range(len(measurement_pairs)):
 			data[pair] = []
