@@ -22,6 +22,7 @@ def initialise_instruments():
     ''' Sets up the device. '''
     adc = ads1261()
     adc.setup_measurements()
+    adc.reset()
     DeviceID, RevisionID = adc.check_ID()
     print(DeviceID, RevisionID)
     #~ dac = dac7562()
@@ -37,10 +38,13 @@ def setup(adc,
             gain = 1, 
             constant_current = 'off', 
             current_out_pin = 'none'):
-                
-    adc.set_frequency(data_rate=adc_frequency, digital_filter = digital_filter)
+    data_rate, digital_filter = 20, 'FIR'
+    constant_current, pin = '100', 'AIN4'
+    gain = 2
+    adc_frequency, digital_filter, constant_current, current_out_pin = data_rate, digital_filter, constant_current, pin # must remove this later
+    adc.set_frequency(data_rate=adc_frequency, digital_filter = digital_filter, print_freq = False)
     adc.PGA(BYPASS = BYPASS, GAIN = gain)
-    adc.print_PGA()
+    #~ adc.print_PGA()
     adc.reference_config(reference_enable=1, RMUXP = 'Internal Positive', RMUXN = 'Internal Negative')
     #~ adc.print_reference_config()
     
@@ -50,16 +54,24 @@ def setup(adc,
     time.sleep(0.1) 
     
     adc.mode1(CHOP='normal', CONVRT='continuous', DELAY = '50us')
-    adc.print_mode1()
-    adc.mode2(gpio3_connection = 'connect',
-            gpio2_connection = 'connect',
-            gpio1_connection = 'disconnect',
-            gpio0_connection = 'disconnect',
-            gpio3_direction = 'output',
-            gpio2_direction = 'output',
-            gpio1_direction = 'output',
-            gpio0_direction = 'output')
-    
+    #~ adc.print_mode1()
+    #~ adc.mode2(gpio3_connection = 'connect',
+            #~ gpio2_connection = 'connect',
+            #~ gpio1_connection = 'disconnect',
+            #~ gpio0_connection = 'disconnect',
+            #~ gpio3_direction = 'output',
+            #~ gpio2_direction = 'output',
+            #~ gpio1_direction = 'output',
+            #~ gpio0_direction = 'output')
+    adc.mode2()
+    adc.mode3(PWDN = 0,
+        STATENB = 1,
+        CRCENB = 0,
+        SPITIM = 0,
+        GPIO3 = 0,
+        GPIO2 = 0,
+        GPIO1 = 0,
+        GPIO0 = 0)
     x,y = adc.current_out_magnitude(current1 = constant_current, current2 = 'off')
     x,y = adc.current_out_pin(IMUX1 = current_out_pin, IMUX2 = 'NONE')
     adc.start1()
@@ -88,17 +100,30 @@ def GaN_measurement(adc, positive, negative, reference, gain, window = 10, statu
     samples = []
     for i in range(window):
         try:
-            samples.append(adc.collect_measurement(method='hardware', reference = reference, gain = gain, status = status_byte))
+            response = adc.collect_measurement(method='hardware', reference = reference, gain = gain, status = status_byte, bits = True)
+            response = abs(response) # remove this if necessary
+            #~ print(response)
+            samples.append(response)
         except KeyboardInterrupt:
             adc.end()
     return np.median(samples), np.std(samples)
 
-def multiplex(adc, measurement_pairs, result_queue, gain, window = 100, status_byte = 'enabled', data_rate = 7200, digital_filter = 'sinc2'):
+def multiplex(adc, measurement_pairs, result_queue, gain, reference = 5000, window = 100, status_byte = 'enabled', data_rate = 7200, digital_filter = 'sinc2'):
     medians, standard_deviations = [], []
     #~ external_reference = adc.ac_simple('AC') # need to grab the current then replace the ac-excitation settings
-    external_reference = 0
+    external_reference = adc.power_readback()
+    setup(adc)
+    #~ external_reference = 5000 # reference voltage, not completely accurate
     adc.PGA(BYPASS = 0, GAIN = gain)
     adc.set_frequency(data_rate = data_rate, digital_filter = digital_filter, print_freq = False)
+    adc.mode3(PWDN = 0,
+        STATENB = 1,
+        CRCENB = 0,
+        SPITIM = 0,
+        GPIO3 = 0,
+        GPIO2 = 0,
+        GPIO1 = 0,
+        GPIO0 = 0)
     print("Positive \t Negative \t Median (mV) \t Standard Deviation (uV)")
     for measurement_pair in measurement_pairs:
         positive, negative = measurement_pair[0], measurement_pair[1]
@@ -106,6 +131,8 @@ def multiplex(adc, measurement_pairs, result_queue, gain, window = 100, status_b
         medians.append(median)
         standard_deviations.append(standard_deviation)
         print(positive,'\t\t', negative,'\t\t', median,'\t\t', standard_deviation*1000)
+        #~ adc.print_mode3()
+        #~ print(adc.check_current())
     temperature = adc.check_temperature()
     print("Temperature (deg C):", temperature)
     result_queue.put(("GaN", [external_reference, medians, standard_deviations, temperature]))
@@ -158,10 +185,10 @@ def write_to_csv(csv_file, fieldnames, measurement_date, measurement_time, GaN_s
     
 def main():
     # Change these parameters:
-    window = 1
+    window = 10
     data_rate, digital_filter = 20, 'FIR'
     constant_current, pin = '100', 'AIN4'
-    gain = 8
+    gain = 1
     connected_pH_meter = False # set to true if connected
        
     # forward measurement pairs
@@ -193,6 +220,7 @@ def main():
         
     # Avoid changing the following parameters:
     adc, dac, pH_meter = initialise_instruments()
+    reference = adc.power_readback()
     
     setup(adc = adc,
         adc_frequency = data_rate, 
@@ -235,6 +263,7 @@ def main():
         status_byte = 'disabled'
     else: 
         status_byte = "enabled"
+    print("Status byte:", status_byte)
     flag = 0
     while(1):        
         try:
@@ -242,7 +271,7 @@ def main():
             q = queue.Queue()
 
             commercial_pH_thread = threading.Thread(target = commercial_pH, args=(q, connected_pH_meter))
-            GaN_sensor_thread = threading.Thread(target = multiplex, args=(adc, measurement_pairs, q, gain, window, status_byte, data_rate, digital_filter))
+            GaN_sensor_thread = threading.Thread(target = multiplex, args=(adc, measurement_pairs, q, gain, reference, window, status_byte, data_rate, digital_filter))
             
             threads = [commercial_pH_thread, GaN_sensor_thread]
             
@@ -287,6 +316,10 @@ def main():
             print("Total time taken:", time.time() - start)   
         except KeyboardInterrupt:
             adc.end()
+        except Exception as e:
+            print("Error in constant current program")
+            print(e)
+            
     flag = 1 
     
     return 0
