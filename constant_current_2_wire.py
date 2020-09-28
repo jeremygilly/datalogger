@@ -81,11 +81,12 @@ def check_maximum_gain(adc, measurement_pairs):
 def GaN_measurement(adc, positive, negative, reference, gain, window = 10, status_byte = 'enabled'):
     adc.stop() # stop measurements and allows the register to be changed.
     adc.choose_inputs(positive = positive, negative = negative)
-    time.sleep(0.1) # sleep for 50 ms after changing inputs allowing the voltage to settle with a FIR and 20 SPS. x2 for chop-mode.
+
     #~ adc.PGA(BYPASS = 0, GAIN = gain)
     adc.start1() # starts measurements and prevents register changes.
     response = None
     samples = []
+    time.sleep(0.1) # sleep for 50 ms after changing inputs allowing the voltage to settle with a FIR and 20 SPS. x2 for chop-mode.
     #~ print("Reference:", reference, "Gain:", gain) # for diagnostics only
     for i in range(window):
         try:
@@ -113,14 +114,10 @@ def multiplex(adc, measurement_pairs, result_queue, gain, reference = 5000, wind
         medians.append(median)
         standard_deviations.append(standard_deviation)
         print(positive,'\t\t', negative,'\t\t', median,'\t\t', standard_deviation*1000)
-        #~ print(adc.check_status())
-        #~ gain = 
-        #~ adc.print_mode3()
-        #~ print(adc.check_current())
     temperature = adc.check_temperature()
     #~ temperature = 0
     print("Temperature (deg C):", temperature)
-    result_queue.put(("GaN", [external_reference, medians, standard_deviations, temperature]))
+    result_queue.put(("GaN", [medians, standard_deviations, temperature]))
     return 0
     
 def commercial_pH(result_queue, connected = False):
@@ -145,10 +142,10 @@ def write_to_csv(csv_file, fieldnames, measurement_date, measurement_time, GaN_s
     ''' This function writes all the results to CSV. It requires the results to be 
         unpacked before submission. Would be good to remove the print requirement. '''
     #~ print(all_results)
-    external_reference, medians, standard_deviations, temperature = GaN_sensor_result
+    medians, standard_deviations, temperature = GaN_sensor_result
 
     
-    row = [measurement_date, measurement_time, external_reference]
+    row = [measurement_date, measurement_time]
     for measurement_pair, median, standard_deviation in zip(measurement_pairs, medians, standard_deviations):
         row.extend([median, standard_deviation*1000])
 
@@ -189,9 +186,10 @@ def main():
     
     fieldnames = ['Date', 
         'Time', 
-        'Resistor (10k, mV)',
+        'Resistor (985 ohm, mV)',
+        'Standard deviation of Resistor (uV)',
         'Top 2-wire (mV)',
-        'Standard deviation Top 2-wire (uV)',
+        'Standard deviation of Top 2-wire (uV)',
         'Bottom 2-wire (mV)', 
         'Standard deviation of Bottom 2-wire (uV)',
         'Air Temperature from ADS1261 (deg C)']
