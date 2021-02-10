@@ -1,21 +1,25 @@
 '''
 #~ Constant current datalogger.
 
-Jeremy Gillbanks 22 Jan 2021
+Jeremy Gillbanks 09 Feb 2021
 
-# Requires connection of the ads1261evm
+# Requires connection of the ads1261evm for a constant current sensor.
 
 To use this program, connect:
 AIN4        power+
-AIN3        sense+
-AIN2        sense-
+AIN3        sense1+
+AIN2        sense1-
+AIN7        sense2+
+AIN6        sense2-
+AIN9        sense3+
+AIN8        sense3-
 AINCOM      power- (GND)
 
 By default, this program will output 100 µA via AIN4.
 AINCOM is level-shifted to 2.5 V to maximise the sensitivity to the measurement.
 
 To use: 
-python3 /home/pi/Documents/datalogger/jianan_constant_100uA.py
+python3 /home/pi/Documents/datalogger/array_constant_100uA.py
 
 Scroll to the bottom of the program to make changes :)
 
